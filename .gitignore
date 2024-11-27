@@ -111,6 +111,10 @@ ipython_config.py
 .pdm-python
 .pdm-build/
 
+# Ignore Weights & Biases artifacts and logs
+wandb/
+wandb-debug.log
+
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
