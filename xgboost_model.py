@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import accuracy_score, classification_report, f1_score
@@ -34,7 +34,13 @@ X = np.hstack([
 ])
 Y = wine_data['country']
 
-class_weights = compute_class_weight('balanced', classes=np.unique(Y), y=Y)
+X_train_val, X_test, Y_train_val, Y_test = train_test_split(
+    X, Y, test_size=0.2, stratify=Y, random_state=42
+)
+X_train_val = np.array(X_train_val)
+Y_train_val = np.array(Y_train_val)
+
+class_weights = compute_class_weight('balanced', classes=np.unique(Y_train_val), y=Y_train_val)
 
 kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
@@ -43,9 +49,9 @@ def train_model(config=None):
     with wandb.init(config=config):
         config = wandb.config
         
-        for train_indices, val_indices in kfold.split(X, Y):
-            X_train, X_val = X[train_indices], X[val_indices]
-            Y_train, Y_val = Y[train_indices], Y[val_indices]
+        for train_indices, val_indices in kfold.split(X_train_val, Y_train_val):
+            X_train, X_val = X_train_val[train_indices], X_train_val[val_indices]
+            Y_train, Y_val = Y_train_val[train_indices], Y_train_val[val_indices]
             
             sample_weights_train = np.array([class_weights[cls] for cls in Y_train])
             
@@ -75,14 +81,15 @@ def train_model(config=None):
             wandb.log({"fold_accuracy": val_accuracy, "fold_f1": val_f1})
         
         mean_accuracy = np.mean([
-            accuracy_score(Y[val_indices], model.predict(X[val_indices]))
-            for train_indices, val_indices in kfold.split(X, Y)
+            accuracy_score(Y_train_val[val_indices], model.predict(X_train_val[val_indices]))
+            for _, val_indices in kfold.split(X_train_val, Y_train_val)
         ])
         mean_f1 = np.mean(fold_results)
         wandb.log({"mean_accuracy": mean_accuracy, "mean_f1": mean_f1})
         print(f"Mean Accuracy across folds: {mean_accuracy}")
         print(f"Mean F1 Score across folds: {mean_f1}")
 
+print("Class Weights:", dict(zip(np.unique(Y_train_val), class_weights)))
 
 
 sweep_config = {
