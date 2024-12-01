@@ -1,43 +1,154 @@
 import argparse
+import os
+import json
+import time
+import requests
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import accuracy_score, classification_report, f1_score, confusion_matrix
-from sentence_transformers import SentenceTransformer
 from xgboost import XGBClassifier
 import wandb
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_URL = "https://candidate-llm.extraction.artificialos.com/v1/chat/completions"
+API_KEY = os.getenv("LLM_API_KEY")
+if not API_KEY:
+    raise ValueError("API key not found. Please set the LLM_API_KEY environment variable.")
+
+cache_file = "llm_cache.json"
+try:
+    with open(cache_file, "r") as f:
+        cache = json.load(f)
+except FileNotFoundError:
+    cache = {}
+
+def query_llm_with_retry(description, retries=3, wait_time=5):
+    if description in cache:
+        return cache[description]
+    
+    for attempt in range(retries):
+        try:
+            headers = {
+                "x-api-key": API_KEY,
+                "Content-Type": "application/json",
+            }
+            
+            prompt = (
+                f"Analyze the following wine description:\n\n{description}\n\n"
+                "1. Does it mention a specific location? If yes, is the location in Spain, France, Italy, or the US?\n"
+                "2. Extract the most relevant keywords from the description.\n\n"
+                "Answer in this JSON format:\n"
+                '{"contains_location": true/false, "country": "Spain/France/Italy/USA/None", "keywords": ["keyword1", "keyword2", ...]}'
+            )
+            
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 150,
+                "temperature": 0.2,
+            }
+            
+            response = requests.post(API_URL, headers=headers, json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                output = json.loads(result["choices"][0]["message"]["content"])
+                cache[description] = output
+                return output
+            elif response.status_code == 429:
+                print(f"Rate limit hit. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                raise Exception(f"API error: {response.status_code}, {response.text}")
+        
+        except Exception as e:
+            print(f"Error on attempt {attempt + 1}: {e}")
+            time.sleep(wait_time)
+    
+    print("Max retries reached. Skipping this description.")
+    cache[description] = {"contains_location": False, "country": None, "keywords": []}
+    return cache[description]
+
+def process_dataset_with_llm(file_path, output_file="processed_data.csv"):
+    wine_data = pd.read_csv(file_path)
+    
+    contains_location = []
+    countries = []
+    keywords_list = []
+    
+    for index, description in enumerate(wine_data['description']):
+        if isinstance(description, str):
+            output = query_llm_with_retry(description)
+            contains_location.append(output.get("contains_location", False))
+            countries.append(output.get("country", None) if output.get("country", None) != "USA" else "US")
+            keywords_list.append(output.get("keywords", []))
+            
+            if (index + 1) % 10 == 0:
+                with open(cache_file, "w") as f:
+                    json.dump(cache, f)
+                print(f"Processed {index + 1}/{len(wine_data)} rows.")
+        else:
+            contains_location.append(False)
+            countries.append(None)
+            keywords_list.append([])
+    
+    with open(cache_file, "w") as f:
+        json.dump(cache, f)
+    
+    wine_data['country_from_location'] = countries
+    wine_data['keywords'] = [" ".join(x) for x in keywords_list]
+    
+    numerical_columns = ['points', 'price']
+    scaler = StandardScaler()
+    wine_data[numerical_columns] = scaler.fit_transform(wine_data[numerical_columns])
+
+    map = {'US': 0, 'France': 1, 'Italy': 2, 'Spain': 3}
+    wine_data['country'] = wine_data['country'].map(map)
+    wine_data['country_from_location'] = wine_data['country_from_location'].map(map)
+
+    label_encoder = LabelEncoder()
+    threshold = 3
+    variety_counts = wine_data['variety'].value_counts()
+    rare_varieties = variety_counts[variety_counts < threshold].index
+    wine_data['variety'] = wine_data['variety'].replace(rare_varieties, 'Other')
+    wine_data['variety'] = label_encoder.fit_transform(wine_data['variety'])
+
+    wine_data.drop(columns=['Unnamed: 0', 'description'], inplace=True)
+
+    wine_data.to_csv(output_file, index=False)
+    return wine_data
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--hyper_tune", action="store_true", help="Perform hyperparameter tuning using WandB.")
+parser.add_argument("--dataset", default="data/wine_quality.csv", help="Path to the dataset.")
 args = parser.parse_args()
 
-file_path = 'data/wine_quality.csv'
-wine_data = pd.read_csv(file_path)
-wine_data.drop(columns=['Unnamed: 0'], inplace=True)
+file_path = args.dataset
+base, ext = os.path.splitext(args.dataset)
+output_file = f"{base}_processed.csv"
 
-label_encoder = LabelEncoder()
-wine_data['country'] = label_encoder.fit_transform(wine_data['country'])
+try:
+    input = pd.read_csv(file_path)
+    length = len(input)
+except FileNotFoundError:
+    print("File not found.")
+    exit(1)
 
-model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
-wine_data['description_emb'] = list(model.encode(wine_data['description'].tolist()))
+if os.path.exists(output_file) and len(pd.read_csv(output_file)) == len(pd.read_csv(file_path)):
+    wine_data = pd.read_csv(output_file)
+    print("Processed data already exists. Skipping processing.")
+else:
+    wine_data = process_dataset_with_llm(file_path, output_file)
 
-numerical_columns = ['points', 'price']
-scaler = StandardScaler()
-wine_data[numerical_columns] = scaler.fit_transform(wine_data[numerical_columns])
+print(wine_data.head())
 
-threshold = 3
-variety_counts = wine_data['variety'].value_counts()
-rare_varieties = variety_counts[variety_counts < threshold].index
-wine_data['variety'] = wine_data['variety'].replace(rare_varieties, 'Other')
-wine_data['variety'] = label_encoder.fit_transform(wine_data['variety'])
-
-X = np.hstack([
-    np.vstack(wine_data['description_emb']),
-    wine_data.drop(columns=['description_emb', 'country', 'description']).values
-])
-Y = wine_data['country']
+X, Y = wine_data.drop(columns=['country']), wine_data['country']
 
 X_train_val, X_test, Y_train_val, Y_test = train_test_split(
     X, Y, test_size=0.2, stratify=Y, random_state=42
@@ -134,7 +245,7 @@ if args.hyper_tune:
     }
 
     sweep_id = wandb.sweep(sweep_config, project="wine-classification")
-    wandb.agent(sweep_id, function=train_model, count=250)
+    wandb.agent(sweep_id, function=train_model, count=50)
 else:
     api = wandb.Api()
     project_path = "wb122-imperial-college-london/wine-classification"
