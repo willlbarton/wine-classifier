@@ -146,7 +146,7 @@ except FileNotFoundError:
     print("File not found.")
     exit(1)
 
-if os.path.exists(output_file) and len(pd.read_csv(output_file)) == len(pd.read_csv(file_path)):
+if False and os.path.exists(output_file) and len(pd.read_csv(output_file)) == len(pd.read_csv(file_path)):
     wine_data = pd.read_csv(output_file)
     print("Processed data already exists. Skipping processing.")
 else:
@@ -251,17 +251,51 @@ if args.hyper_tune:
     }
 
     sweep_id = wandb.sweep(sweep_config, project="tf-idf-xgboost")
-    wandb.agent(sweep_id, function=train_model, count=50)
+    wandb.agent(sweep_id, function=train_model, count=250)
 else:
+    kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    fold_accuracies = []
+    fold_f1_scores = []
+    conf_matrix = np.zeros((len(np.unique(Y_test)), len(np.unique(Y_test))))  # For cumulative confusion matrix
+
+    for fold, (train_indices, val_indices) in enumerate(kfold.split(X_train_val, Y_train_val)):
+        X_train_fold, X_val_fold = X_train_val[train_indices], X_train_val[val_indices]
+        Y_train_fold, Y_val_fold = Y_train_val[train_indices], Y_train_val[val_indices]
+
+        sample_weights_train = np.array([class_weights[cls] for cls in Y_train_fold])
+
+        model = XGBClassifier()
+        model.fit(X_train_fold, Y_train_fold, sample_weight=sample_weights_train)
+
+        val_pred = model.predict(X_val_fold)
+        val_accuracy = accuracy_score(Y_val_fold, val_pred)
+        val_f1 = f1_score(Y_val_fold, val_pred, average='weighted')
+
+        conf_matrix += confusion_matrix(Y_val_fold, val_pred)
+
+        fold_accuracies.append(val_accuracy)
+        fold_f1_scores.append(val_f1)
+
+        print(f"Fold {fold + 1} - Accuracy: {val_accuracy:.4f}, F1 Score: {val_f1:.4f}")
+
+    mean_accuracy = np.mean(fold_accuracies)
+    mean_f1 = np.mean(fold_f1_scores)
+
+    print("\nCross-Validation Results:")
+    print(f"Mean Accuracy: {mean_accuracy:.4f}")
+    print(f"Mean F1 Score: {mean_f1:.4f}")
+    print(f"Cumulative Confusion Matrix:\n{conf_matrix}")
+
     final_model = XGBClassifier()
-    final_model.fit(X_train_val, Y_train_val)
+    final_model.fit(X_train_val, Y_train_val, sample_weight=np.array([class_weights[cls] for cls in Y_train_val]))
 
     test_pred = final_model.predict(X_test)
     test_accuracy = accuracy_score(Y_test, test_pred)
     test_f1 = f1_score(Y_test, test_pred, average='weighted')
     test_conf = confusion_matrix(Y_test, test_pred)
 
-    print("Test Set Evaluation")
-    print(f"Accuracy: {test_accuracy}")
-    print(f"F1 Score: {test_f1}")
+    print("\nTest Set Evaluation:")
+    print(f"Accuracy: {test_accuracy:.4f}")
+    print(f"F1 Score: {test_f1:.4f}")
     print(f"Confusion Matrix:\n{test_conf}")
