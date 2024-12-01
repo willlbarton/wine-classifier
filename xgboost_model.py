@@ -1,7 +1,6 @@
 import argparse
 import pandas as pd
 import numpy as np
-import pickle
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
@@ -14,7 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--hyper_tune", action="store_true", help="Perform hyperparameter tuning using WandB.")
 args = parser.parse_args()
 
-file_path = 'data/wine_quality_1000.csv'
+file_path = 'data/wine_quality.csv'
 wine_data = pd.read_csv(file_path)
 wine_data.drop(columns=['Unnamed: 0'], inplace=True)
 
@@ -63,7 +62,7 @@ def train_model(config=None):
             subsample=config.subsample,
             colsample_bytree=config.colsample_bytree,
             min_child_weight=config.min_child_weight,
-            gamma=config.gamma,
+            gamma=0,
             reg_alpha=config.reg_alpha,
             reg_lambda=config.reg_lambda,
             random_state=42,
@@ -86,8 +85,6 @@ def train_model(config=None):
             conf += confusion_matrix(Y_val, val_pred) / 5
             fold_f1.append(val_f1)
             fold_acc.append(val_accuracy)
-            
-            wandb.log({"fold_accuracy": val_accuracy, "fold_f1": val_f1})
 
         mean_f1 = np.mean(fold_f1)
         mean_accuracy = np.mean(fold_acc)
@@ -99,7 +96,7 @@ if args.hyper_tune:
     sweep_config = {
         'method': 'bayes',
         'metric': {
-            'name': 'mean_f1',
+            'name': 'mean_accuracy',
             'goal': 'maximize'
         },
         'parameters': {
@@ -124,10 +121,6 @@ if args.hyper_tune:
             'min_child_weight': {
                 'min': 1,
                 'max': 10
-            },
-            'gamma': {
-                'min': 0,
-                'max': 5
             },
             'reg_alpha': {
                 'min': 0,
