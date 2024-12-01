@@ -75,7 +75,7 @@ def query_llm_with_retry(description, retries=3, wait_time=5):
     cache[description] = {"contains_location": False, "country": None, "keywords": []}
     return cache[description]
 
-def process_dataset_with_llm(file_path, output_file="processed_data.csv"):
+def process_dataset_with_llm(file_path, output_file):
     wine_data = pd.read_csv(file_path)
     
     contains_location = []
@@ -102,7 +102,13 @@ def process_dataset_with_llm(file_path, output_file="processed_data.csv"):
         json.dump(cache, f)
     
     wine_data['country_from_location'] = countries
-    wine_data['keywords'] = [" ".join(x) for x in keywords_list]
+    tfidf = TfidfVectorizer(max_features=250)
+    tfidf_matrix = tfidf.fit_transform([" ".join(x) for x in keywords_list])
+    tfidf_features = pd.DataFrame(tfidf_matrix.toarray(), 
+                                  columns=tfidf.get_feature_names_out(), 
+                                  index=wine_data.index)
+    
+    wine_data = pd.concat([wine_data, tfidf_features], axis=1)
     
     numerical_columns = ['points', 'price']
     scaler = StandardScaler()
@@ -244,30 +250,10 @@ if args.hyper_tune:
         }
     }
 
-    sweep_id = wandb.sweep(sweep_config, project="wine-classification")
+    sweep_id = wandb.sweep(sweep_config, project="tf-idf-xgboost")
     wandb.agent(sweep_id, function=train_model, count=50)
 else:
-    api = wandb.Api()
-    project_path = "wb122-imperial-college-london/wine-classification"
-    runs = api.runs(project_path)
-    best_run = sorted(runs, key=lambda run: run.summary.get("mean_f1", 0), reverse=True)[0]
-    best_hyperparameters = best_run.config
-
-    final_model = XGBClassifier(
-        n_estimators=best_hyperparameters["n_estimators"],
-        learning_rate=best_hyperparameters["learning_rate"],
-        max_depth=best_hyperparameters["max_depth"],
-        subsample=best_hyperparameters["subsample"],
-        colsample_bytree=best_hyperparameters["colsample_bytree"],
-        min_child_weight=best_hyperparameters["min_child_weight"],
-        gamma=best_hyperparameters["gamma"],
-        reg_alpha=best_hyperparameters["reg_alpha"],
-        reg_lambda=best_hyperparameters["reg_lambda"],
-        random_state=42,
-        objective='multi:softprob',
-        eval_metric='mlogloss'
-    )
-
+    final_model = XGBClassifier()
     final_model.fit(X_train_val, Y_train_val)
 
     test_pred = final_model.predict(X_test)
