@@ -257,11 +257,11 @@ else:
 
     fold_accuracies = []
     fold_f1_scores = []
-    conf_matrix = np.zeros((len(np.unique(Y_test)), len(np.unique(Y_test))))  # For cumulative confusion matrix
+    conf_matrix = np.zeros((len(np.unique(Y)), len(np.unique(Y))))  # For cumulative confusion matrix
 
-    for fold, (train_indices, val_indices) in enumerate(kfold.split(X_train_val, Y_train_val)):
-        X_train_fold, X_val_fold = X_train_val[train_indices], X_train_val[val_indices]
-        Y_train_fold, Y_val_fold = Y_train_val[train_indices], Y_train_val[val_indices]
+    for fold, (train_indices, val_indices) in enumerate(kfold.split(X, Y)):
+        X_train_fold, X_val_fold = X.iloc[train_indices], X.iloc[val_indices]
+        Y_train_fold, Y_val_fold = Y.iloc[train_indices], Y.iloc[val_indices]
 
         sample_weights_train = np.array([class_weights[cls] for cls in Y_train_fold])
 
@@ -286,16 +286,3 @@ else:
     print(f"Mean Accuracy: {mean_accuracy:.4f}")
     print(f"Mean F1 Score: {mean_f1:.4f}")
     print(f"Cumulative Confusion Matrix:\n{conf_matrix}")
-
-    final_model = XGBClassifier()
-    final_model.fit(X_train_val, Y_train_val, sample_weight=np.array([class_weights[cls] for cls in Y_train_val]))
-
-    test_pred = final_model.predict(X_test)
-    test_accuracy = accuracy_score(Y_test, test_pred)
-    test_f1 = f1_score(Y_test, test_pred, average='weighted')
-    test_conf = confusion_matrix(Y_test, test_pred)
-
-    print("\nTest Set Evaluation:")
-    print(f"Accuracy: {test_accuracy:.4f}")
-    print(f"F1 Score: {test_f1:.4f}")
-    print(f"Confusion Matrix:\n{test_conf}")
