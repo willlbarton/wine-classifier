@@ -146,13 +146,11 @@ except FileNotFoundError:
     print("File not found.")
     exit(1)
 
-if False and os.path.exists(output_file) and len(pd.read_csv(output_file)) == len(pd.read_csv(file_path)):
+if os.path.exists(output_file) and len(pd.read_csv(output_file)) == len(pd.read_csv(file_path)):
     wine_data = pd.read_csv(output_file)
     print("Processed data already exists. Skipping processing.")
 else:
     wine_data = process_dataset_with_llm(file_path, output_file)
-
-print(wine_data.head())
 
 X, Y = wine_data.drop(columns=['country']), wine_data['country']
 
@@ -161,6 +159,7 @@ X_train_val, X_test, Y_train_val, Y_test = train_test_split(
 )
 X_train_val = np.array(X_train_val)
 Y_train_val = np.array(Y_train_val)
+X, Y = np.array(X), np.array(Y)
 
 class_weights = compute_class_weight('balanced', classes=np.unique(Y_train_val), y=Y_train_val)
 
@@ -179,7 +178,6 @@ def train_model(config=None):
             subsample=config.subsample,
             colsample_bytree=config.colsample_bytree,
             min_child_weight=config.min_child_weight,
-            gamma=0,
             reg_alpha=config.reg_alpha,
             reg_lambda=config.reg_lambda,
             random_state=42,
@@ -188,9 +186,9 @@ def train_model(config=None):
         )
         
         conf = np.zeros((4, 4))
-        for train_indices, val_indices in kfold.split(X_train_val, Y_train_val):
-            X_train, X_val = X_train_val[train_indices], X_train_val[val_indices]
-            Y_train, Y_val = Y_train_val[train_indices], Y_train_val[val_indices]
+        for train_indices, val_indices in kfold.split(X, Y):
+            X_train, X_val = X[train_indices], X[val_indices]
+            Y_train, Y_val = Y[train_indices], Y[val_indices]
             
             sample_weights_train = np.array([class_weights[cls] for cls in Y_train])
             
@@ -257,7 +255,7 @@ else:
 
     fold_accuracies = []
     fold_f1_scores = []
-    conf_matrix = np.zeros((len(np.unique(Y)), len(np.unique(Y))))  # For cumulative confusion matrix
+    conf_matrix = np.zeros((len(np.unique(Y)), len(np.unique(Y))))
 
     for fold, (train_indices, val_indices) in enumerate(kfold.split(X, Y)):
         X_train_fold, X_val_fold = X.iloc[train_indices], X.iloc[val_indices]
