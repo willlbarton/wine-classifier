@@ -133,6 +133,7 @@ def process_dataset_with_llm(file_path, output_file):
 parser = argparse.ArgumentParser()
 parser.add_argument("--hyper_tune", action="store_true", help="Perform hyperparameter tuning using WandB.")
 parser.add_argument("--dataset", default="data/wine_quality.csv", help="Path to the dataset.")
+parser.add_argument("--optimal", action="store_true", help="Train the model with optimal hyperparameters.")
 args = parser.parse_args()
 
 file_path = args.dataset
@@ -152,20 +153,13 @@ if os.path.exists(output_file) and len(pd.read_csv(output_file)) == len(pd.read_
 else:
     wine_data = process_dataset_with_llm(file_path, output_file)
 
-X, Y = wine_data.drop(columns=['country']), wine_data['country']
+X, Y = np.array(wine_data.drop(columns=['country'])), np.array(wine_data['country'])
 
-X_train_val, X_test, Y_train_val, Y_test = train_test_split(
-    X, Y, test_size=0.2, stratify=Y, random_state=42
-)
-X_train_val = np.array(X_train_val)
-Y_train_val = np.array(Y_train_val)
-X, Y = np.array(X), np.array(Y)
-
-class_weights = compute_class_weight('balanced', classes=np.unique(Y_train_val), y=Y_train_val)
+class_weights = compute_class_weight('balanced', classes=np.unique(Y), y=Y)
 
 kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-def train_model(config=None):
+def wandb_run(config=None):
     fold_f1 = []
     fold_acc = []
     with wandb.init(config=config):
@@ -206,6 +200,55 @@ def train_model(config=None):
         wandb.log({"mean_accuracy": mean_accuracy, "mean_f1": mean_f1})
         print(f"Mean Accuracy across folds: {mean_accuracy}")
         print(f"Mean F1 Score across folds: {mean_f1}")
+
+def train_model(config=None):
+    fold_accuracies = []
+    fold_f1_scores = []
+    conf_matrix = np.zeros((len(np.unique(Y)), len(np.unique(Y))))
+
+    for fold, (train_indices, val_indices) in enumerate(kfold.split(X, Y)):
+        X_train_fold, X_val_fold = X[train_indices], X[val_indices]
+        Y_train_fold, Y_val_fold = Y[train_indices], Y[val_indices]
+
+        sample_weights_train = np.array([class_weights[cls] for cls in Y_train_fold])
+
+        model = XGBClassifier()
+
+        if config:
+            model = XGBClassifier(
+                n_estimators=config["n_estimators"],
+                learning_rate=config["learning_rate"],
+                max_depth=config["max_depth"],
+                subsample=config["subsample"],
+                colsample_bytree=config["colsample_bytree"],
+                min_child_weight=config["min_child_weight"],
+                reg_alpha=config["reg_alpha"],
+                reg_lambda=config["reg_lambda"],
+                random_state=42,
+                objective='multi:softprob',
+                eval_metric='mlogloss'
+            )
+
+        model.fit(X_train_fold, Y_train_fold, sample_weight=sample_weights_train)
+
+        val_pred = model.predict(X_val_fold)
+        val_accuracy = accuracy_score(Y_val_fold, val_pred)
+        val_f1 = f1_score(Y_val_fold, val_pred, average='weighted')
+
+        conf_matrix += confusion_matrix(Y_val_fold, val_pred)
+
+        fold_accuracies.append(val_accuracy)
+        fold_f1_scores.append(val_f1)
+
+        print(f"Fold {fold + 1} - Accuracy: {val_accuracy:.4f}, F1 Score: {val_f1:.4f}")
+
+    mean_accuracy = np.mean(fold_accuracies)
+    mean_f1 = np.mean(fold_f1_scores)
+
+    print("\nCross-Validation Results:")
+    print(f"Mean Accuracy: {mean_accuracy:.4f}")
+    print(f"Mean F1 Score: {mean_f1:.4f}")
+    print(f"Cumulative Confusion Matrix:\n{conf_matrix}")
 
 if args.hyper_tune:
     sweep_config = {
@@ -249,38 +292,13 @@ if args.hyper_tune:
     }
 
     sweep_id = wandb.sweep(sweep_config, project="tf-idf-xgboost")
-    wandb.agent(sweep_id, function=train_model, count=250)
+    wandb.agent(sweep_id, function=wandb_run, count=250)
+
+elif args.optimal:
+    api = wandb.Api()
+    runs = api.runs("wb122-imperial-college-london/tf-idf-xgboost")
+    best_run = max(runs, key=lambda run: run.summary.get('mean_f1', 0))
+    train_model(config=best_run.config)
+
 else:
-    kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
-    fold_accuracies = []
-    fold_f1_scores = []
-    conf_matrix = np.zeros((len(np.unique(Y)), len(np.unique(Y))))
-
-    for fold, (train_indices, val_indices) in enumerate(kfold.split(X, Y)):
-        X_train_fold, X_val_fold = X.iloc[train_indices], X.iloc[val_indices]
-        Y_train_fold, Y_val_fold = Y.iloc[train_indices], Y.iloc[val_indices]
-
-        sample_weights_train = np.array([class_weights[cls] for cls in Y_train_fold])
-
-        model = XGBClassifier()
-        model.fit(X_train_fold, Y_train_fold, sample_weight=sample_weights_train)
-
-        val_pred = model.predict(X_val_fold)
-        val_accuracy = accuracy_score(Y_val_fold, val_pred)
-        val_f1 = f1_score(Y_val_fold, val_pred, average='weighted')
-
-        conf_matrix += confusion_matrix(Y_val_fold, val_pred)
-
-        fold_accuracies.append(val_accuracy)
-        fold_f1_scores.append(val_f1)
-
-        print(f"Fold {fold + 1} - Accuracy: {val_accuracy:.4f}, F1 Score: {val_f1:.4f}")
-
-    mean_accuracy = np.mean(fold_accuracies)
-    mean_f1 = np.mean(fold_f1_scores)
-
-    print("\nCross-Validation Results:")
-    print(f"Mean Accuracy: {mean_accuracy:.4f}")
-    print(f"Mean F1 Score: {mean_f1:.4f}")
-    print(f"Cumulative Confusion Matrix:\n{conf_matrix}")
+    train_model()
