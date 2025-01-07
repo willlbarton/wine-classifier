@@ -5,11 +5,11 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import accuracy_score, classification_report, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from xgboost import XGBClassifier
 import wandb
 from dotenv import load_dotenv
@@ -212,7 +212,7 @@ def train_model(config=None):
 
         sample_weights_train = np.array([class_weights[cls] for cls in Y_train_fold])
 
-        model = XGBClassifier()
+        model = XGBClassifier(random_state=42)
 
         if config:
             model = XGBClassifier(
